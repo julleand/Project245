@@ -37,7 +37,7 @@ namespace game
   // Paddle and ball settings
   constexpr int paddleHeight = 15;
   constexpr int paddleWidth = 2;
-  constexpr int ballSize = 4;
+  constexpr int ballSize = 3;
   constexpr float initialBallSpeedX = -2.0; // Ensure the ball always starts towards player 1
   constexpr float initialBallSpeedY = 1.0;
 
