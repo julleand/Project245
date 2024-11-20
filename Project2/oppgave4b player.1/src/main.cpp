@@ -4,13 +4,14 @@
 #include <FlexCAN_T4.h>
 #include <SPI.h>
 #include <Wire.h>
-#include <string.h>
 
 // Constants for screen and paddle properties
 namespace carrier
 {
   namespace pin
   {
+    constexpr uint8_t joyUp{22};
+    constexpr uint8_t joyDown{23};
     constexpr uint8_t joyClick{19}; // Button to switch to master
     constexpr uint8_t oledDcPower{6};
     constexpr uint8_t oledCs{10};
@@ -32,7 +33,8 @@ namespace game
   constexpr float initialBallSpeedX = -2.0;
   constexpr float initialBallSpeedY = 1.0;
 
-  int paddle1Y = 20; // Initial Y position of player 1 paddle
+  int paddle1Y = 20; // Player 1 paddle position
+  int paddle2Y = 20; // Opponent paddle position (from Player 2)
   int ballX = carrier::oled::screenWidth / 2;
   int ballY = carrier::oled::screenHeight / 2;
   float ballSpeedX = initialBallSpeedX;
@@ -43,7 +45,7 @@ namespace game
 namespace communication
 {
   CAN_message_t msg;
-  FlexCAN_T4<CAN0, RX_SIZE_256, TX_SIZE_16> can0;
+  FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1;
 }
 
 // Display setup
@@ -55,19 +57,20 @@ Adafruit_SSD1306 display(carrier::oled::screenWidth,
                          carrier::pin::oledCs);
 
 bool isMaster = false;
-constexpr int Gruppenr = 1;           // Set this to your Player 1 group number
-constexpr int MotstanderGruppenr = 2; // Group number of Player 2
+constexpr int Playernr = 1;           // Set this to Player 1's number
+constexpr int MotstanderPlayernr = 2; // Player 2's number
 
-void drawPaddleAndBall();
+void handleInput();
 void handleCANInput();
 void updateBallPosition();
-void sendBallPosition();
+void sendGameState();
+void drawPaddlesAndBall();
 
 void setup()
 {
   Serial.begin(9600);
-  communication::can0.begin();
-  communication::can0.setBaudRate(250000);
+  communication::can1.begin();
+  communication::can1.setBaudRate(250000);
 
   // Initialize the OLED display
   if (!display.begin(SSD1306_SWITCHCAPVCC))
@@ -80,7 +83,9 @@ void setup()
   display.display();
   delay(1000);
 
-  // Set joystick button as input to switch to master mode
+  // Set joystick pins as input
+  pinMode(carrier::pin::joyUp, INPUT_PULLUP);
+  pinMode(carrier::pin::joyDown, INPUT_PULLUP);
   pinMode(carrier::pin::joyClick, INPUT_PULLUP);
 }
 
@@ -94,83 +99,96 @@ void loop()
 
   if (isMaster)
   {
+    handleInput(); // Control paddle in master mode
     updateBallPosition();
-    sendBallPosition();
+    sendGameState();
   }
   else
   {
-    handleCANInput();
+    handleInput(); // Paddle control even in non-master mode
+    handleCANInput(); // Receive updates in non-master mode
   }
 
-  drawPaddleAndBall();
+  drawPaddlesAndBall();
   delay(50); // Adjust refresh rate as needed
+}
+
+void handleInput()
+{
+  // Read joystick inputs to control paddle movement
+  if (digitalRead(carrier::pin::joyUp) == LOW) // UP
+  {
+    game::paddle1Y -= 2;
+    if (game::paddle1Y < 0)
+      game::paddle1Y = 0;
+  }
+
+  if (digitalRead(carrier::pin::joyDown) == LOW) // DOWN
+  {
+    game::paddle1Y += 2;
+    if (game::paddle1Y > carrier::oled::screenHeight - game::paddleHeight)
+      game::paddle1Y = carrier::oled::screenHeight - game::paddleHeight;
+  }
+
+  // Send paddle position, regardless of master or slave
+  communication::msg.id = Playernr + 20; // CAN ID for Player 1's paddle position
+  communication::msg.len = 2;
+  communication::msg.buf[0] = game::paddle1Y & 0xFF;          // Lower byte
+  communication::msg.buf[1] = (game::paddle1Y >> 8) & 0xFF;   // Upper byte
+  communication::can1.write(communication::msg);
 }
 
 void handleCANInput()
 {
-  // Check for CAN messages
-  if (communication::can0.read(communication::msg))
+  // Check if a CAN message has been received
+  if (communication::can1.read(communication::msg))
   {
-    // If message is from Player 2 controlling paddle movements
-    if (communication::msg.id == MotstanderGruppenr + 20)
+    // Case 1: Receive paddle position update from Player 2 (Slave sends this)
+    if (communication::msg.id == MotstanderPlayernr + 20) // CAN ID = 22 (Player 2 + 20)
     {
-      // Check first byte to determine paddle movement direction
-      if (communication::msg.buf[0] == 1) // 1 for UP
-      {
-        game::paddle1Y -= 2;
-        if (game::paddle1Y < 0) game::paddle1Y = 0;
-      }
-      else if (communication::msg.buf[0] == 2) // 2 for DOWN
-      {
-        game::paddle1Y += 2;
-        if (game::paddle1Y > carrier::oled::screenHeight - game::paddleHeight)
-          game::paddle1Y = carrier::oled::screenHeight - game::paddleHeight;
-      }
+      // Update Player 2's paddle position (paddle2Y)
+      game::paddle2Y = communication::msg.buf[0] | (communication::msg.buf[1] << 8);
     }
-    // If message is the ball position update from Player 2
-    else if (communication::msg.id == MotstanderGruppenr + 50)
+    // Case 2: Receive game state update from Player 2 (Master sends this)
+    else if (communication::msg.id == MotstanderPlayernr + 50) // CAN ID = 52 (Player 2 + 50)
     {
-      // Read the ball position from CAN message
+      // Update ball position
       game::ballX = communication::msg.buf[0] | (communication::msg.buf[1] << 8);
       game::ballY = communication::msg.buf[2] | (communication::msg.buf[3] << 8);
+
+      // Update Player 2's paddle position (paddle2Y)
+      game::paddle2Y = communication::msg.buf[4] | (communication::msg.buf[5] << 8);
     }
   }
 }
 
+
 void updateBallPosition()
 {
-  // Update ball position based on speed
   game::ballX += game::ballSpeedX;
   game::ballY += game::ballSpeedY;
 
-  // Check for collisions with top and bottom walls
+  // Collision with top and bottom walls
   if (game::ballY <= 0 || game::ballY >= carrier::oled::screenHeight - game::ballSize)
-  {
     game::ballSpeedY = -game::ballSpeedY;
+
+  // Collision with Player 2 paddle
+  if (game::ballX >= carrier::oled::screenWidth - game::paddleWidth - game::ballSize)
+  {
+    if (game::ballY >= game::paddle2Y && game::ballY <= game::paddle2Y + game::paddleHeight)
+      game::ballSpeedX = -game::ballSpeedX;
   }
 
-  // Check for paddle collisions
+  // Collision with Player 1 paddle
   if (game::ballX <= game::paddleWidth)
   {
-    // Collide with Player 1's paddle (left)
     if (game::ballY >= game::paddle1Y && game::ballY <= game::paddle1Y + game::paddleHeight)
-    {
       game::ballSpeedX = -game::ballSpeedX;
-    }
-  }
-  else if (game::ballX >= carrier::oled::screenWidth - game::paddleWidth - game::ballSize)
-  {
-    // Collide with Player 2's paddle (right)
-    if (game::ballY >= game::paddle1Y && game::ballY <= game::paddle1Y + game::paddleHeight)
-    {
-      game::ballSpeedX = -game::ballSpeedX;
-    }
   }
 
-  // Check for scoring
+  // Scoring (ball out of bounds)
   if (game::ballX < 0 || game::ballX > carrier::oled::screenWidth)
   {
-    // Reset ball to center
     game::ballX = carrier::oled::screenWidth / 2;
     game::ballY = carrier::oled::screenHeight / 2;
     game::ballSpeedX = game::initialBallSpeedX;
@@ -178,23 +196,29 @@ void updateBallPosition()
   }
 }
 
-void sendBallPosition()
+void sendGameState()
 {
-  communication::msg.id = Gruppenr + 50; // Message ID for ball position
-  communication::msg.len = 4;
+  communication::msg.id = Playernr + 50;
+  communication::msg.len = 6;
   communication::msg.buf[0] = game::ballX & 0xFF;
   communication::msg.buf[1] = (game::ballX >> 8) & 0xFF;
   communication::msg.buf[2] = game::ballY & 0xFF;
   communication::msg.buf[3] = (game::ballY >> 8) & 0xFF;
-  communication::can0.write(communication::msg);
+  communication::msg.buf[4] = game::paddle1Y & 0xFF;
+  communication::msg.buf[5] = (game::paddle1Y >> 8) & 0xFF;
+  communication::can1.write(communication::msg);
 }
 
-void drawPaddleAndBall()
+void drawPaddlesAndBall()
 {
   display.clearDisplay();
 
   // Draw Player 1 paddle on the left side of the screen
   display.fillRect(0, game::paddle1Y, game::paddleWidth, game::paddleHeight, SSD1306_WHITE);
+
+  // Draw Player 2 paddle on the right side of the screen
+  display.fillRect(carrier::oled::screenWidth - game::paddleWidth, game::paddle2Y,
+                   game::paddleWidth, game::paddleHeight, SSD1306_WHITE);
 
   // Draw the ball
   display.fillRect(game::ballX, game::ballY, game::ballSize, game::ballSize, SSD1306_WHITE);
