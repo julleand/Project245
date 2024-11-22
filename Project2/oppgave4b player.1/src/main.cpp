@@ -45,7 +45,7 @@ namespace game
 namespace communication
 {
   CAN_message_t msg;
-  FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1;
+  FlexCAN_T4<CAN0, RX_SIZE_256, TX_SIZE_16> can0;
 }
 
 // Display setup
@@ -57,20 +57,22 @@ Adafruit_SSD1306 display(carrier::oled::screenWidth,
                          carrier::pin::oledCs);
 
 bool isMaster = false;
+bool otherIsMaster = false; // Indicates if the other player is master
 constexpr int Playernr = 1;           // Set this to Player 1's number
 constexpr int MotstanderPlayernr = 2; // Player 2's number
 
 void handleInput();
 void handleCANInput();
-void updateBallPosition();
+void gameMasterControll();
 void sendGameState();
 void drawPaddlesAndBall();
+void checkIfMaster();
 
 void setup()
 {
   Serial.begin(9600);
-  communication::can1.begin();
-  communication::can1.setBaudRate(250000);
+  communication::can0.begin();
+  communication::can0.setBaudRate(250000);
 
   // Initialize the OLED display
   if (!display.begin(SSD1306_SWITCHCAPVCC))
@@ -91,27 +93,69 @@ void setup()
 
 void loop()
 {
-  // Check if Player 1 has pressed the joystick button to become the master
-  if (digitalRead(carrier::pin::joyClick) == LOW && !isMaster)
+  checkIfMaster(); // Check if other player is master
+
+  if (!otherIsMaster)
   {
-    isMaster = true;
+    // Check if Player 1 has pressed the joystick button to become the master
+    if (digitalRead(carrier::pin::joyClick) == LOW && !isMaster)
+    {
+      isMaster = true;
+    }
   }
+  
+  handleInput(); // Paddle control even in non-master mode
 
   if (isMaster)
   {
-    handleInput(); // Control paddle in master mode
-    updateBallPosition();
-    sendGameState();
-  }
-  else
-  {
-    handleInput(); // Paddle control even in non-master mode
-    handleCANInput(); // Receive updates in non-master mode
+    gameMasterControll();
   }
 
+  sendGameState();
+  handleCANInput();
   drawPaddlesAndBall();
   delay(50); // Adjust refresh rate as needed
 }
+
+void checkIfMaster()
+{
+  // If this player is the master, announce it over CAN
+  if (isMaster)
+  {
+    communication::msg.id = 100; // ID for master announcement
+    communication::msg.len = 1;
+    communication::msg.buf[0] = 1; // Indicates this player is master
+    communication::can0.write(communication::msg);
+  }
+
+  // If this player is not the master, send a message confirming this
+  if (!isMaster)
+  {
+    communication::msg.id = 101; // ID for slave response
+    communication::msg.len = 1;
+    communication::msg.buf[0] = 0; // Indicates this player is not master
+    communication::can0.write(communication::msg);
+  }
+
+  // Check for messages from the other player
+  if (communication::can0.read(communication::msg))
+  {
+    // Other player announces they are the master
+    if (communication::msg.id == 100 && communication::msg.buf[0] == 1)
+    {
+      otherIsMaster = true;
+    }
+    // Other player confirms they are not master
+    else if (communication::msg.id == 101 && communication::msg.buf[0] == 0)
+    {
+      otherIsMaster = false;
+    }
+  }
+
+  
+}
+
+
 
 void handleInput()
 {
@@ -129,19 +173,12 @@ void handleInput()
     if (game::paddle1Y > carrier::oled::screenHeight - game::paddleHeight)
       game::paddle1Y = carrier::oled::screenHeight - game::paddleHeight;
   }
-
-  // Send paddle position, regardless of master or slave
-  communication::msg.id = Playernr + 20; // CAN ID for Player 1's paddle position
-  communication::msg.len = 2;
-  communication::msg.buf[0] = game::paddle1Y & 0xFF;          // Lower byte
-  communication::msg.buf[1] = (game::paddle1Y >> 8) & 0xFF;   // Upper byte
-  communication::can1.write(communication::msg);
 }
 
 void handleCANInput()
 {
   // Check if a CAN message has been received
-  if (communication::can1.read(communication::msg))
+  if (communication::can0.read(communication::msg))
   {
     // Case 1: Receive paddle position update from Player 2 (Slave sends this)
     if (communication::msg.id == MotstanderPlayernr + 20) // CAN ID = 22 (Player 2 + 20)
@@ -162,8 +199,7 @@ void handleCANInput()
   }
 }
 
-
-void updateBallPosition()
+void gameMasterControll()
 {
   game::ballX += game::ballSpeedX;
   game::ballY += game::ballSpeedY;
@@ -198,15 +234,28 @@ void updateBallPosition()
 
 void sendGameState()
 {
-  communication::msg.id = Playernr + 50;
-  communication::msg.len = 6;
-  communication::msg.buf[0] = game::ballX & 0xFF;
-  communication::msg.buf[1] = (game::ballX >> 8) & 0xFF;
-  communication::msg.buf[2] = game::ballY & 0xFF;
-  communication::msg.buf[3] = (game::ballY >> 8) & 0xFF;
-  communication::msg.buf[4] = game::paddle1Y & 0xFF;
-  communication::msg.buf[5] = (game::paddle1Y >> 8) & 0xFF;
-  communication::can1.write(communication::msg);
+  if (!isMaster)
+  {
+    // Send paddle position, regardless of master or slave
+    communication::msg.id = Playernr + 20; // CAN ID for Player 1's paddle position
+    communication::msg.len = 2;
+    communication::msg.buf[0] = game::paddle1Y & 0xFF;          // Lower byte
+    communication::msg.buf[1] = (game::paddle1Y >> 8) & 0xFF;   // Upper byte
+    communication::can0.write(communication::msg);
+  }
+
+  if (isMaster)
+  {
+    communication::msg.id = Playernr + 50;
+    communication::msg.len = 6;
+    communication::msg.buf[0] = game::ballX & 0xFF;
+    communication::msg.buf[1] = (game::ballX >> 8) & 0xFF;
+    communication::msg.buf[2] = game::ballY & 0xFF;
+    communication::msg.buf[3] = (game::ballY >> 8) & 0xFF;
+    communication::msg.buf[4] = game::paddle1Y & 0xFF;
+    communication::msg.buf[5] = (game::paddle1Y >> 8) & 0xFF;
+    communication::can0.write(communication::msg);
+  }
 }
 
 void drawPaddlesAndBall()
