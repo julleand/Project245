@@ -58,8 +58,8 @@ Adafruit_SSD1306 display(carrier::oled::screenWidth,
 
 bool isMaster = false;
 bool otherIsMaster = false; // Indicates if the other player is master
-constexpr int Playernr = 1;           // Set this to Player 1's number
-constexpr int MotstanderPlayernr = 2; // Player 2's number
+constexpr int Gruppenr = 3;           // Set it to this Player's group number
+constexpr int MotstanderGruppenr = 2; // Set it to enemy Player's group number
 
 void handleInput();
 void handleCANInput();
@@ -155,8 +155,6 @@ void checkIfMaster()
   
 }
 
-
-
 void handleInput()
 {
   // Read joystick inputs to control paddle movement
@@ -181,13 +179,13 @@ void handleCANInput()
   if (communication::can0.read(communication::msg))
   {
     // Case 1: Receive paddle position update from Player 2 (Slave sends this)
-    if (communication::msg.id == MotstanderPlayernr + 20) // CAN ID = 22 (Player 2 + 20)
+    if (communication::msg.id == MotstanderGruppenr + 20) 
     {
       // Update Player 2's paddle position (paddle2Y)
       game::paddle2Y = communication::msg.buf[0] | (communication::msg.buf[1] << 8);
     }
     // Case 2: Receive game state update from Player 2 (Master sends this)
-    else if (communication::msg.id == MotstanderPlayernr + 50) // CAN ID = 52 (Player 2 + 50)
+    else if (communication::msg.id == MotstanderGruppenr + 50) 
     {
       // Update ball position
       game::ballX = communication::msg.buf[0] | (communication::msg.buf[1] << 8);
@@ -236,8 +234,8 @@ void sendGameState()
 {
   if (!isMaster)
   {
-    // Send paddle position, regardless of master or slave
-    communication::msg.id = Playernr + 20; // CAN ID for Player 1's paddle position
+    // Send paddle position to Master unit
+    communication::msg.id = Gruppenr + 20; 
     communication::msg.len = 2;
     communication::msg.buf[0] = game::paddle1Y & 0xFF;          // Lower byte
     communication::msg.buf[1] = (game::paddle1Y >> 8) & 0xFF;   // Upper byte
@@ -246,7 +244,8 @@ void sendGameState()
 
   if (isMaster)
   {
-    communication::msg.id = Playernr + 50;
+    // sen Paddel and Ball position to Slave unit
+    communication::msg.id = Gruppenr + 50;
     communication::msg.len = 6;
     communication::msg.buf[0] = game::ballX & 0xFF;
     communication::msg.buf[1] = (game::ballX >> 8) & 0xFF;

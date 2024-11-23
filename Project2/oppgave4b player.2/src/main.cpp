@@ -58,8 +58,8 @@ Adafruit_SSD1306 display(carrier::oled::screenWidth,
 
 bool isMaster = false;
 bool otherIsMaster = false; // Indicates if the other player is master
-constexpr int Playernr = 2;           // Set this to Player 2's number
-constexpr int MotstanderPlayernr = 1; // Player 1's number
+constexpr int Gruppenr = 2;           // Set this to Player 2's number
+constexpr int MotstanderGruppenr = 1; // Player 1's number
 
 void handleInput();
 void handleCANInput();
@@ -177,13 +177,13 @@ void handleCANInput()
   if (communication::can0.read(communication::msg))
   {
     // Case 1: Receive paddle position update from Player 1 (Slave sends this)
-    if (communication::msg.id == MotstanderPlayernr + 20) // CAN ID = 21 (Player 1 + 20)
+    if (communication::msg.id == MotstanderGruppenr + 20) // CAN ID = 21 (Player 1 + 20)
     {
       // Update Player 1's paddle position (paddle1Y)
       game::paddle1Y = communication::msg.buf[0] | (communication::msg.buf[1] << 8);
     }
     // Case 2: Receive game state update from Player 1 (Master sends this)
-    else if (communication::msg.id == MotstanderPlayernr + 50) // CAN ID = 51 (Player 1 + 50)
+    else if (communication::msg.id == MotstanderGruppenr + 50) // CAN ID = 51 (Player 1 + 50)
     {
       // Update ball position
       game::ballX = communication::msg.buf[0] | (communication::msg.buf[1] << 8);
@@ -233,7 +233,7 @@ void sendGameState()
 if (!isMaster)
   {
   // Send paddle position if in slave mode
-  communication::msg.id = Playernr + 20; // CAN ID for Player 1's paddle position
+  communication::msg.id = Gruppenr + 20; // CAN ID for Player 1's paddle position
   communication::msg.len = 2;
   communication::msg.buf[0] = game::paddle2Y & 0xFF;          // Lower byte
   communication::msg.buf[1] = (game::paddle2Y >> 8) & 0xFF;   // Upper byte
@@ -242,7 +242,7 @@ if (!isMaster)
 
 if (isMaster)
   {
-  communication::msg.id = Playernr + 50;
+  communication::msg.id = Gruppenr + 50;
   communication::msg.len = 6;
   communication::msg.buf[0] = game::ballX & 0xFF;
   communication::msg.buf[1] = (game::ballX >> 8) & 0xFF;
